@@ -2,7 +2,7 @@
    Cache dos arquivos do app para funcionar offline.
    Os DADOS ficam em localStorage (não passam pelo cache). */
 
-const CACHE = 'controle-financeiro-v1.0.0';
+const CACHE = 'controle-financeiro-v1.1.0';
 const ASSETS = [
   './',
   './index.html',

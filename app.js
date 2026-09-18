@@ -39,6 +39,7 @@ let state = {
   viewDate: new Date(), // mês em exibição
   formType: 'expense',
   filterType: 'all',
+  payMode: 'cash', // 'cash' | 'installment' (só para despesa)
 };
 
 /* ---------- Utilidades ---------- */
@@ -286,12 +287,15 @@ function renderList() {
     const catList = CATEGORIES[t.type];
     const cat = catList.find((c) => c.id === t.category) || { nome: t.category, icon: '📦' };
     const [y, m, d] = t.date.split('-');
+    const badge = t.groupId
+      ? `<span class="tx-badge">${t.installment}/${t.installmentsTotal}</span>`
+      : '';
     const item = document.createElement('div');
     item.className = 'tx-item';
     item.innerHTML = `
       <div class="tx-icon">${cat.icon}</div>
       <div class="tx-info">
-        <div class="tx-desc">${escapeHtml(t.desc)}</div>
+        <div class="tx-desc">${escapeHtml(t.desc)}${badge}</div>
         <div class="tx-meta">${cat.nome} · ${d}/${m}/${y}</div>
       </div>
       <div class="tx-amount ${t.type}">${t.type === 'income' ? '+' : '-'} ${brl(t.amount)}</div>
@@ -326,6 +330,69 @@ function setFormType(type) {
   $('#btn-expense').classList.toggle('active', type === 'expense');
   $('#btn-income').classList.toggle('active', type === 'income');
   fillCategorySelect();
+  // Parcelamento só faz sentido em despesa
+  $('#payment-block').classList.toggle('hidden', type !== 'expense');
+  if (type !== 'expense') setPayMode('cash');
+  updateInstallmentPreview();
+}
+
+function setPayMode(mode) {
+  state.payMode = mode;
+  $('#btn-cash').classList.toggle('active', mode === 'cash');
+  $('#btn-installment').classList.toggle('active', mode === 'installment');
+  $('#installment-fields').classList.toggle('hidden', mode !== 'installment');
+  // Rótulo do valor muda para deixar claro que é o total da compra
+  $('#amount-label').textContent = mode === 'installment' ? 'Valor total (R$)' : 'Valor (R$)';
+  $('#date-label').textContent = mode === 'installment' ? 'Data da 1ª parcela' : 'Data';
+  updateInstallmentPreview();
+}
+
+/* Divide um total em N parcelas com centavos exatos (o resto vai na 1ª parcela) */
+function splitInstallments(total, n) {
+  const totalCents = Math.round(total * 100);
+  const base = Math.floor(totalCents / n);
+  const rest = totalCents - base * n;
+  const parts = [];
+  for (let i = 0; i < n; i++) {
+    const cents = base + (i === 0 ? rest : 0);
+    parts.push(cents / 100);
+  }
+  return parts;
+}
+
+/* Soma meses a uma data 'YYYY-MM-DD' preservando o dia (ajusta se o mês não tiver o dia) */
+function addMonths(dateStr, months) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const target = new Date(y, m - 1 + months, 1);
+  const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+  const day = Math.min(d, lastDay);
+  return `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function updateInstallmentPreview() {
+  const el = $('#installment-preview');
+  if (!el) return;
+  if (state.formType !== 'expense' || state.payMode !== 'installment') {
+    el.textContent = '';
+    return;
+  }
+  const total = parseAmount($('#tx-amount').value);
+  const n = parseInt($('#tx-installments').value, 10);
+  if (isNaN(total) || total <= 0 || isNaN(n) || n < 2) {
+    el.textContent = '';
+    return;
+  }
+  const parts = splitInstallments(total, n);
+  const firstDate = $('#tx-date').value;
+  const primeira = parts[0];
+  const demais = parts[n - 1];
+  let txt = `${n}x de ${brl(demais)}`;
+  if (primeira !== demais) txt = `1ª de ${brl(primeira)} + ${n - 1}x de ${brl(demais)}`;
+  if (firstDate) {
+    const [yy, mm] = firstDate.split('-');
+    txt += ` · a partir de ${MESES[Number(mm) - 1].slice(0, 3)}/${yy}`;
+  }
+  el.textContent = txt;
 }
 
 function openModal(tx = null) {
@@ -334,17 +401,25 @@ function openModal(tx = null) {
     $('#modal-title').textContent = 'Editar lançamento';
     $('#tx-id').value = tx.id;
     setFormType(tx.type);
+    // Ao editar, sempre mostramos a parcela individual (modo à vista no form).
+    // O parcelamento só é definido na criação.
+    setPayMode('cash');
+    $('#tx-installments').value = '';
     $('#tx-amount').value = tx.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
     $('#tx-desc').value = tx.desc;
     $('#tx-category').value = tx.category;
     $('#tx-date').value = tx.date;
+    // Se for parcela, não deixa reparcelar na edição (evita bagunça); esconde a opção
+    $('#payment-block').classList.toggle('hidden', tx.type !== 'expense' || !!tx.groupId);
     $('#btn-delete').classList.remove('hidden');
   } else {
     $('#modal-title').textContent = 'Novo lançamento';
     $('#tx-id').value = '';
     setFormType('expense');
+    setPayMode('cash');
     $('#tx-amount').value = '';
     $('#tx-desc').value = '';
+    $('#tx-installments').value = '';
     // data padrão: hoje, ou dia 1 do mês em exibição se for outro mês
     const today = new Date();
     const useDate = monthKey(today) === monthKey(state.viewDate)
@@ -370,27 +445,60 @@ function handleSubmit(e) {
   if (!desc) { toast('Informe uma descrição.'); return; }
 
   const id = $('#tx-id').value;
-  const data = {
-    type: state.formType,
-    amount: Math.round(amount * 100) / 100,
-    desc,
-    category: $('#tx-category').value,
-    date: $('#tx-date').value,
-  };
+  const category = $('#tx-category').value;
+  const firstDate = $('#tx-date').value;
+  const isInstallment = !id && state.formType === 'expense' && state.payMode === 'installment';
 
-  if (id) {
-    const idx = state.transactions.findIndex((t) => t.id === id);
-    if (idx >= 0) state.transactions[idx] = { ...state.transactions[idx], ...data };
-    toast('Lançamento atualizado.');
+  if (isInstallment) {
+    const n = parseInt($('#tx-installments').value, 10);
+    if (isNaN(n) || n < 2) {
+      toast('Informe o número de parcelas (mínimo 2).');
+      return;
+    }
+    if (n > 120) { toast('Máximo de 120 parcelas.'); return; }
+
+    const total = Math.round(amount * 100) / 100;
+    const parts = splitInstallments(total, n);
+    const groupId = uid();
+    const createdAt = Date.now();
+
+    parts.forEach((val, i) => {
+      state.transactions.push({
+        id: uid(),
+        createdAt: createdAt + i, // mantém ordem estável
+        type: 'expense',
+        amount: val,
+        desc,
+        category,
+        date: addMonths(firstDate, i),
+        groupId,
+        installment: i + 1,
+        installmentsTotal: n,
+      });
+    });
+    toast(`Compra parcelada em ${n}x adicionada.`);
   } else {
-    state.transactions.push({ id: uid(), createdAt: Date.now(), ...data });
-    toast('Lançamento adicionado.');
+    const data = {
+      type: state.formType,
+      amount: Math.round(amount * 100) / 100,
+      desc,
+      category,
+      date: firstDate,
+    };
+    if (id) {
+      const idx = state.transactions.findIndex((t) => t.id === id);
+      if (idx >= 0) state.transactions[idx] = { ...state.transactions[idx], ...data };
+      toast('Lançamento atualizado.');
+    } else {
+      state.transactions.push({ id: uid(), createdAt: Date.now(), ...data });
+      toast('Lançamento adicionado.');
+    }
   }
 
   saveTxs();
   closeModal();
   // pula pro mês do lançamento pra ele aparecer
-  const [yy, mm] = data.date.split('-');
+  const [yy, mm] = firstDate.split('-');
   state.viewDate = new Date(Number(yy), Number(mm) - 1, 1);
   render();
 }
@@ -398,12 +506,33 @@ function handleSubmit(e) {
 function handleDelete() {
   const id = $('#tx-id').value;
   if (!id) return;
-  if (!confirm('Excluir este lançamento?')) return;
-  state.transactions = state.transactions.filter((t) => t.id !== id);
+  const tx = state.transactions.find((t) => t.id === id);
+  if (!tx) return;
+
+  if (tx.groupId) {
+    // É uma parcela: perguntar o escopo da exclusão
+    const total = state.transactions.filter((t) => t.groupId === tx.groupId).length;
+    const apagarTodas = confirm(
+      `Esta é a parcela ${tx.installment}/${tx.installmentsTotal}.\n\n` +
+      `OK = excluir a compra inteira (${total} parcelas)\n` +
+      `Cancelar = excluir só esta parcela`
+    );
+    if (apagarTodas) {
+      state.transactions = state.transactions.filter((t) => t.groupId !== tx.groupId);
+      toast('Compra parcelada excluída.');
+    } else {
+      state.transactions = state.transactions.filter((t) => t.id !== id);
+      toast('Parcela excluída.');
+    }
+  } else {
+    if (!confirm('Excluir este lançamento?')) return;
+    state.transactions = state.transactions.filter((t) => t.id !== id);
+    toast('Lançamento excluído.');
+  }
+
   saveTxs();
   closeModal();
   render();
-  toast('Lançamento excluído.');
 }
 
 /* ===========================================================
@@ -476,6 +605,12 @@ function bindApp() {
 
   $('#btn-expense').addEventListener('click', () => setFormType('expense'));
   $('#btn-income').addEventListener('click', () => setFormType('income'));
+
+  $('#btn-cash').addEventListener('click', () => setPayMode('cash'));
+  $('#btn-installment').addEventListener('click', () => setPayMode('installment'));
+  $('#tx-amount').addEventListener('input', updateInstallmentPreview);
+  $('#tx-installments').addEventListener('input', updateInstallmentPreview);
+  $('#tx-date').addEventListener('change', updateInstallmentPreview);
 
   $('#tx-form').addEventListener('submit', handleSubmit);
   $('#btn-delete').addEventListener('click', handleDelete);

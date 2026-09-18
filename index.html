@@ -111,7 +111,7 @@
       <input type="file" id="import-file" accept="application/json" hidden />
     </div>
 
-    <p class="version-tag" id="version-tag">v1.0.0</p>
+    <p class="version-tag" id="version-tag">v1.1.0</p>
   </div>
 
   <!-- ===== Modal de lançamento ===== -->
@@ -130,7 +130,7 @@
           <button type="button" class="type-btn" data-type="income" id="btn-income">Receita</button>
         </div>
 
-        <label>Valor (R$)</label>
+        <label id="amount-label">Valor (R$)</label>
         <input type="text" id="tx-amount" inputmode="decimal" placeholder="0,00" autocomplete="off" required />
 
         <label>Descrição</label>
@@ -139,7 +139,22 @@
         <label>Categoria</label>
         <select id="tx-category"></select>
 
-        <label>Data</label>
+        <!-- Forma de pagamento (só despesa) -->
+        <div id="payment-block">
+          <label>Forma</label>
+          <div class="type-toggle payment-toggle">
+            <button type="button" class="pay-btn active" data-pay="cash" id="btn-cash">À vista</button>
+            <button type="button" class="pay-btn" data-pay="installment" id="btn-installment">Parcelado</button>
+          </div>
+
+          <div id="installment-fields" class="hidden">
+            <label>Número de parcelas</label>
+            <input type="number" id="tx-installments" inputmode="numeric" min="2" max="120" step="1" placeholder="Ex: 12" autocomplete="off" />
+            <p id="installment-preview" class="installment-preview"></p>
+          </div>
+        </div>
+
+        <label id="date-label">Data</label>
         <input type="date" id="tx-date" required />
 
         <div class="modal-actions">
